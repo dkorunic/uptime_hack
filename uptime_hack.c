@@ -159,8 +159,8 @@ static int uptime_proc_show(struct seq_file *m, void *v)
 	{
 		uptime.tv_sec = myuptime * HZ + jiffies - startjiffies;
 		uptime.tv_nsec = 0;
-		idletime.tv_sec = 0
-		idletime.tv_nsec = 0
+		idle.tv_sec = 0;
+		idle.tv_nsec = 0;
 	}
 	cputime_to_timespec(idletime, &idle);
 	seq_printf(m, "%lu.%02lu %lu.%02lu\n",
