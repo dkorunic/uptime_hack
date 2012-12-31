@@ -85,7 +85,7 @@ static void proc_init(void)
 	uptime_proc_file = create_proc_entry("temp_hack", 0, NULL);
 	if (uptime_proc_file == NULL)
 	{
-		printk(KERN_ALERT "%s error: could not create teporary /proc entry\n",
+		printk(KERN_ALERT "%s error: could not create temporary /proc entry\n",
 				MODULE_NAME);
 		failed = 1;
 		return;
