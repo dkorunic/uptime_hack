@@ -1,0 +1,6 @@
+README
+======
+
+This is a rework of my ancient uptime_hack LKM -- we're now compatible
+with 3.0+ kernels and we look more like a rootkit, as /proc entries aren't
+shadowable with 2.6+ kernels.
