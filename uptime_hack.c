@@ -22,15 +22,15 @@
  *	insmod uptime_hack myuptime=seconds
  *	
  * Example:
- *	vampirella# uptime
- *	 21:55:46 up	1:03,  3 users,  load average: 0.07, 0.02, 0.00
- *	vampirella# insmod uptime_hack.o myuptime=10000000
- *	uptime_hack 1.0 initialised
- *	vampirella# uptime
- *	 21:55:56 up 115 days, 17:46,  3 users,  load average: 0.06, 0.02, 0.00
- *	vampirella# rmmod uptime_hack
- *	vampirella# uptime
- *	 21:56:04 up	1:03,  3 users,  load average: 0.05, 0.02, 0.00
+ *  root@vampirella:~# uptime
+ *   14:59:40 up  2:52,  4 users,  load average: 0.09, 0.15, 0.21
+ *  root@vampirella:~# insmod uptime_hack.ko myuptime=12345
+ *  root@vampirella:~# uptime
+ *   14:59:52 up 35 days, 17:22,  4 users,  load average: 0.07, 0.14, 0.21
+ *
+ *  root@vampirella:~# echo 102021 > /sys/module/uptime_hack/parameters/myuptime 
+ *  root@vampirella:~# uptime
+ *   14:58:25 up 295 days,  7:03,  4 users,  load average: 0.08, 0.16, 0.22
  */
 
 #include <linux/module.h>
@@ -49,6 +49,7 @@
 #define PROCFS_NAME "uptime"
 
 static long unsigned myuptime = 0;
+static long unsigned myidle = 0;
 static long unsigned startjiffies = 0;
 
 static int failed = 0;
@@ -63,6 +64,7 @@ static struct file_operations *uptime_proc_fops;
 static struct file_operations *proc_root_fops;
 
 module_param(myuptime, long, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP);
+module_param(myidle, long, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP);
 
 static void set_addr_rw(void *addr)
 {
@@ -159,7 +161,7 @@ static int uptime_proc_show(struct seq_file *m, void *v)
 	{
 		uptime.tv_sec = myuptime * HZ + jiffies - startjiffies;
 		uptime.tv_nsec = 0;
-		idle.tv_sec = 0;
+		idle.tv_sec = myidle * HZ + jiffies - startjiffies;
 		idle.tv_nsec = 0;
 	}
 	cputime_to_timespec(idletime, &idle);
