@@ -19,16 +19,16 @@
  * 59 Temple Place, Suite 330, Boston, MA  02111-1307 USA
  *
  * Usage:
- *	insmod uptime_hack myuptime=seconds
+ *	insmod uptime_hack uptime=seconds
  *	
  * Example:
  *  root@vampirella:~# uptime
  *   14:59:40 up  2:52,  4 users,  load average: 0.09, 0.15, 0.21
- *  root@vampirella:~# insmod uptime_hack.ko myuptime=12345
+ *  root@vampirella:~# insmod uptime_hack.ko uptime=12345
  *  root@vampirella:~# uptime
  *   14:59:52 up 35 days, 17:22,  4 users,  load average: 0.07, 0.14, 0.21
  *
- *  root@vampirella:~# echo 102021 > /sys/module/uptime_hack/parameters/myuptime 
+ *  root@vampirella:~# echo 102021 > /sys/module/uptime_hack/parameters/uptime 
  *  root@vampirella:~# uptime
  *   14:58:25 up 295 days,  7:03,  4 users,  load average: 0.08, 0.16, 0.22
  */
@@ -48,8 +48,8 @@
 #define MODULE_NAME "uptime"
 #define PROCFS_NAME "uptime"
 
-static long unsigned myuptime = 0;
-static long unsigned myidle = 0;
+static long unsigned uptime = 0;
+static long unsigned idletime = 0;
 static long unsigned startjiffies = 0;
 
 static int failed = 0;
@@ -63,8 +63,8 @@ static struct proc_dir_entry *proc_root;
 static struct file_operations *uptime_proc_fops;
 static struct file_operations *proc_root_fops;
 
-module_param(myuptime, long, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP);
-module_param(myidle, long, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP);
+module_param(uptime, long, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP);
+module_param(idletime, long, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP);
 
 static void set_addr_rw(void *addr)
 {
@@ -144,32 +144,33 @@ static void proc_cleanup(void)
 
 static int uptime_proc_show(struct seq_file *m, void *v)
 {
-	struct timespec uptime;
-	struct timespec idle;
+	struct timespec calc_uptime;
+	struct timespec calc_idle;
 	int i;
-	cputime_t idletime = cputime_zero;
+	cputime_t calc_idletime = cputime_zero;
 
-	if (!myuptime)
+	if (!uptime)
 	{
-		do_posix_clock_monotonic_gettime(&uptime);
-		monotonic_to_bootbased(&uptime);
+		do_posix_clock_monotonic_gettime(&calc_uptime);
+		monotonic_to_bootbased(&calc_uptime);
 
 		for_each_possible_cpu(i)
-			idletime += cputime64_add(idletime, kstat_cpu(i).cpustat.idle);
+			calc_idletime += cputime64_add(calc_idletime, kstat_cpu(i).cpustat.idle);
+		cputime_to_timespec(calc_idletime, &calc_idle);
 	}
 	else
 	{
-		uptime.tv_sec = myuptime * HZ + jiffies - startjiffies;
-		uptime.tv_nsec = 0;
-		idle.tv_sec = myidle * HZ + jiffies - startjiffies;
-		idle.tv_nsec = 0;
+		calc_uptime.tv_sec = uptime * HZ + jiffies - startjiffies;
+		calc_uptime.tv_nsec = 0;
+		calc_idle.tv_sec = idletime * HZ + jiffies - startjiffies;
+		calc_idle.tv_nsec = 0;
 	}
-	cputime_to_timespec(idletime, &idle);
+
 	seq_printf(m, "%lu.%02lu %lu.%02lu\n",
-			(unsigned long) uptime.tv_sec,
-			(uptime.tv_nsec / (NSEC_PER_SEC / 100)),
-			(unsigned long) idle.tv_sec,
-			(idle.tv_nsec / (NSEC_PER_SEC / 100)));
+			(unsigned long) calc_uptime.tv_sec,
+			(calc_uptime.tv_nsec / (NSEC_PER_SEC / 100)),
+			(unsigned long) calc_idle.tv_sec,
+			(calc_idle.tv_nsec / (NSEC_PER_SEC / 100)));
 	return 0;
 }
 
