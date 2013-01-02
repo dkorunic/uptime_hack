@@ -71,14 +71,14 @@ static struct list_head *module_kobj_previous;
 static int param_kmod_hide(const char *, struct kernel_param *);
 
 module_param(uptime, long, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP);
-MODULE_PARM_DESC(uptime, "Sets Linux uptime to this amount of jiffies");
+MODULE_PARM_DESC(uptime, "Sets uptime to this amount of jiffies");
 
 module_param(idletime, long, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP);
-MODULE_PARM_DESC(idletime, "Sets Linux idletime to this amount of jiffies");
+MODULE_PARM_DESC(idletime, "Sets idletime to this amount of jiffies");
 
 module_param_call(hideme, param_kmod_hide, param_get_bool, &hideme, S_IRUSR |
 		S_IWUSR | S_IRGRP | S_IWGRP);
-MODULE_PARM_DESC(hideme, "LKM is hidden (y/n, default n)");
+MODULE_PARM_DESC(hideme, "Is LKM hidden? (y/n, default is n)");
 
 static void set_addr_rw(void *addr)
 {
