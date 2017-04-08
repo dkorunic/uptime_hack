@@ -27,3 +27,14 @@ root@vampirella:~# echo y > /sys/module/uptime_hack/parameters/hideme
 root@vampirella:~# lsmod| grep uptime_hack
 root@vampirella:~#
 ```
+
+Build on Nixos:
+===============
+
+```
+# replace linux_4_10 with the kernel package of your current bootet kernel
+$ export KERNELDIR=$(nix-build -E '(import <nixpkgs> {}).linux_4_10.dev' --no-out-link)/lib/modules/*/build
+$ export hardeningDisable="all";
+$ make
+$ insmod ./uptime_hack.ko
+```
