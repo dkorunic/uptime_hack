@@ -38,3 +38,5 @@ $ export hardeningDisable="all";
 $ make
 $ insmod ./uptime_hack.ko
 ```
+
+(If you don't use [Nixos](https://nixos.org/), you should switch)
