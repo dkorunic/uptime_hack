@@ -5,8 +5,10 @@ A kernel module to change your uptime.
 This kernel module has been tested with 4.10, but might also compile on
 slightlier older kernel versions.
 
-USE:
-====
+Usage:
+======
+
+```
 root@vampirella:~# uptime
  14:59:40 up  2:52,  4 users,  load average: 0.09, 0.15, 0.21
 root@vampirella:~# insmod uptime_hack.ko uptime=12345
@@ -24,3 +26,4 @@ uptime_hack            13443  0
 root@vampirella:~# echo y > /sys/module/uptime_hack/parameters/hideme 
 root@vampirella:~# lsmod| grep uptime_hack
 root@vampirella:~#
+```
