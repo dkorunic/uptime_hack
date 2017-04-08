@@ -1,12 +1,12 @@
-README
-======
+uptime_hack
+===========
 
-INFO:
-This is a rework of my ancient uptime_hack LKM -- we're now compatible
-with 3.0+ kernels and we look more like a rootkit, as /proc entries aren't
-shadowable with 2.6+ kernels.
+A kernel module to change your uptime.
+This kernel module has been tested with 4.10, but might also compile on
+slightlier older kernel versions.
 
 USE:
+====
 root@vampirella:~# uptime
  14:59:40 up  2:52,  4 users,  load average: 0.09, 0.15, 0.21
 root@vampirella:~# insmod uptime_hack.ko uptime=12345
