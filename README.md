@@ -2,7 +2,7 @@ uptime_hack
 ===========
 
 A kernel module to change your uptime.
-This kernel module has been tested with 4.10, but might also compile on
+This kernel module has been tested with 4.18, but might also compile on
 slightlier older kernel versions.
 
 Usage:
@@ -32,10 +32,8 @@ Build on Nixos:
 ===============
 
 ```
-# replace linux_4_10 with the kernel package of your current bootet kernel
-$ export KERNELDIR=$(nix-build -E '(import <nixpkgs> {}).linux_4_10.dev' --no-out-link)/lib/modules/*/build
-$ export hardeningDisable="all";
-$ make
+# replace linux in default.nix with the kernel package of your current bootet kernel
+$ nix-shell --command 'make'
 $ insmod ./uptime_hack.ko
 ```
 
