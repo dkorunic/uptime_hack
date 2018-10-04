@@ -32,7 +32,7 @@ Build on Nixos:
 ===============
 
 ```
-# replace linux in default.nix with the kernel package of your current bootet kernel
+# replace linux in default.nix with the kernel package of your current booted kernel
 $ nix-shell --command 'make'
 $ insmod ./uptime_hack.ko
 ```
