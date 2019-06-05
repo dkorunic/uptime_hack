@@ -1,19 +1,17 @@
-#  Dinko Korunic 'kreator', 2012.
-#  Uptime hack LKM
-# 
-#  Copyright (C) 2012  Dinko Korunic
-
-DEBUG=n
-KVERSION=$(shell uname -r)
-
-ifeq ($(DEBUG),y)
-	ccflags-y += -DDEBUG
-endif
-
+ifneq ($(KERNELRELEASE),)
 obj-m += uptime_hack.o
 
-all: 
-	make -C /lib/modules/$(KVERSION)/build M=$(PWD) modules
+else
+KERNELDIR ?= /lib/modules/$(shell uname -r)/build
+PWD := $(shell pwd)
 
-clean: 
-	make -C /lib/modules/$(KVERSION)/build M=$(PWD) clean
+default:
+	$(MAKE) -C $(KERNELDIR) M=$(PWD)  modules
+
+modules_install:
+	$(MAKE) -C $(KERNELDIR) M=$(PWD) modules_install
+
+clean:
+	$(MAKE) -C $(KERNELDIR) M=$(PWD) clean
+
+endif
