@@ -59,27 +59,39 @@ static int uptime_proc_open(struct inode *inode, struct file *file);
 // Access to internal proc structures,
 // check for changes before updating
 struct proc_dir_entry {
+	/*
+	 * number of callers into module in progress;
+	 * negative -> it's going away RSN
+	 */
+	atomic_t in_use;
+	refcount_t refcnt;
+	struct list_head pde_openers;   /* who did ->open, but not ->release */
+	/* protects ->pde_openers and all struct pde_opener instances */
+	spinlock_t pde_unload_lock;
+	struct completion *pde_unload_completion;
+	const struct inode_operations *proc_iops;
+	const struct file_operations *proc_fops;
+	const struct dentry_operations *proc_dops;
+	union {
+		const struct seq_operations *seq_ops;
+		int (*single_show)(struct seq_file *, void *);
+	};
+	proc_write_t write;
+	void *data;
+	unsigned int state_size;
 	unsigned int low_ino;
-	umode_t mode;
 	nlink_t nlink;
 	kuid_t uid;
 	kgid_t gid;
 	loff_t size;
-	const struct inode_operations *proc_iops;
-	const struct file_operations *proc_fops;
 	struct proc_dir_entry *parent;
 	struct rb_root subdir;
 	struct rb_node subdir_node;
-	void *data;
-	atomic_t count;  /* use count */
-	atomic_t in_use; /* number of callers into module in progress; */
-			 /* negative -> it's going away RSN */
-	struct completion *pde_unload_completion;
-	struct list_head pde_openers; /* who did ->open, but not ->release */
-	spinlock_t pde_unload_lock;   /* proc_fops checks and pde_users bumps */
+	char *name;
+	umode_t mode;
 	u8 namelen;
-	char name[];
-};
+	char inline_name[];
+} __randomize_layout;
 
 static struct proc_dir_entry *uptime_proc_file;
 static struct proc_dir_entry *proc_root;
@@ -261,7 +273,7 @@ static void proc_cleanup(void)
 
 static int uptime_proc_show(struct seq_file *m, void *v)
 {
-	struct timespec real_uptime;
+	struct timespec64 real_uptime;
 	struct timespec64 real_idle;
 	u64 nsec;
 	u32 rem;
@@ -269,7 +281,7 @@ static int uptime_proc_show(struct seq_file *m, void *v)
 	nsec = 0;
 	for_each_possible_cpu(i)
 		nsec += (__force u64)kcpustat_cpu(i).cpustat[CPUTIME_IDLE];
-	get_monotonic_boottime(&real_uptime);
+	ktime_get_boottime_ts64(&real_uptime);
 	real_idle.tv_sec = div_u64_rem(nsec, NSEC_PER_SEC, &rem);
 	real_idle.tv_nsec = rem;
 	seq_printf(m, "%lu.%02lu %lu.%02lu\n",

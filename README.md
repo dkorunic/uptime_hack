@@ -2,7 +2,7 @@ uptime_hack
 ===========
 
 A kernel module to change your uptime.
-This kernel module has been tested with 4.18, but might also compile on
+This kernel module has been tested with 5.1.5, but might also compile on
 slightlier older kernel versions.
 
 Usage:
