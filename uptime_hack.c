@@ -187,11 +187,11 @@ static int param_kmod_hide(const char *val, const struct kernel_param *kp)
 	return 0;
 }
 
-static const struct file_operations uptime_proc_fops2 = {
-    .open = uptime_proc_open,
-    .read = seq_read,
-    .llseek = seq_lseek,
-    .release = single_release,
+static const struct proc_ops uptime_proc_fops2 = {
+    .proc_open = uptime_proc_open,
+    .proc_read = seq_read,
+    .proc_lseek = seq_lseek,
+    .proc_release = single_release,
 };
 
 static void proc_init(void)
