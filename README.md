@@ -1,12 +1,14 @@
-README
+uptime_hack
+===========
+
+A kernel module to change your uptime.
+This kernel module has been tested with 6.0.12, but might also compile on
+slightlier older kernel versions.
+
+Usage:
 ======
 
-INFO:
-This is a rework of my ancient uptime_hack LKM -- we're now compatible
-with 3.0+ kernels and we look more like a rootkit, as /proc entries aren't
-shadowable with 2.6+ kernels.
-
-USE:
+```
 root@vampirella:~# uptime
  14:59:40 up  2:52,  4 users,  load average: 0.09, 0.15, 0.21
 root@vampirella:~# insmod uptime_hack.ko uptime=12345
@@ -24,3 +26,15 @@ uptime_hack            13443  0
 root@vampirella:~# echo y > /sys/module/uptime_hack/parameters/hideme 
 root@vampirella:~# lsmod| grep uptime_hack
 root@vampirella:~#
+```
+
+Build on Nixos:
+===============
+
+```
+# replace linux in default.nix with the kernel package of your current booted kernel
+$ nix-shell --command 'make'
+$ insmod ./uptime_hack.ko
+```
+
+(If you don't use [Nixos](https://nixos.org/), you should switch)
