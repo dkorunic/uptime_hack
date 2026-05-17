@@ -1,134 +1,54 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
- * Jörg Thalehim 'Mic92', 2017.
- * Dinko Korunic 'kreator', 2012.
- * Uptime hack LKM
+ * Copyright (C) 2012  Dinko Korunic 'kreator'
+ * Copyright (C) 2017  Jörg Thalheim 'Mic92'
+ * Copyright (C) 2026  Dinko Korunic
  *
- * Copyright (C) 2012  Dinko Korunic
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License as published by the
- * Free Software Foundation; either version 2 of the License, or (at your
- * option) any later version.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License along
- * with this program; if not, write to the Free Software Foundation, Inc.,
- * 59 Temple Place, Suite 330, Boston, MA  02111-1307 USA
- *
- * Usage:
- * insmod uptime_hack uptime=seconds
- *
- * Example:
- *  root@vampirella:~# uptime
- *   14:59:40 up 2:52,  4 users,  load average: 0.09, 0.15, 0.21
- *  root@vampirella:~# insmod uptime_hack.ko uptime=12345
- *  root@vampirella:~# uptime
- *   14:59:52 up 35 days, 17:22, 4 users, load average: 0.07, 0.14, 0.21
- *
- *  root@vampirella:~# echo 102021 > /sys/module/uptime_hack/parameters/uptime
- *  root@vampirella:~# uptime
- *   14:58:25 up 295 days, 7:03,  4 users,  load average: 0.08, 0.16, 0.22
+ * Fakes /proc/uptime via an ftrace hook on uptime_proc_show.
+ * Requires CONFIG_DYNAMIC_FTRACE_WITH_REGS and CONFIG_KPROBES.
  */
 
-#include <linux/fs.h>
+#include <linux/ctype.h>
+#include <linux/ftrace.h>
 #include <linux/init.h>
 #include <linux/kernel_stat.h>
+#include <linux/kprobes.h>
+#include <linux/math64.h>
 #include <linux/module.h>
-#include <linux/proc_fs.h>
-#include <linux/sched.h>
+#include <linux/overflow.h>
 #include <linux/seq_file.h>
+#include <linux/timekeeping.h>
 
-#define MODULE_VERS "1.4"
+#define MODULE_VERS "1.8"
 #define MODULE_NAME "uptime_hack"
-#define PROCFS_NAME "uptime"
+#define TARGET_SYMBOL "uptime_proc_show"
 
 static long unsigned uptime = 0;
 static long unsigned idletime = 0;
 
-static char proc_failed = 0;
 static char hideme = 0;
 static char module_hidden = 0;
 
-static int (*old_uptime_proc_open)(struct inode *inode, struct file *file);
-static int uptime_proc_open(struct inode *inode, struct file *file);
-
-// Access to internal proc structures,
-// check for changes before updating
-struct proc_dir_entry {
-	/*
-	 * number of callers into module in progress;
-	 * negative -> it's going away RSN
-	 */
-	atomic_t in_use;
-	refcount_t refcnt;
-	struct list_head pde_openers;   /* who did ->open, but not ->release */
-	/* protects ->pde_openers and all struct pde_opener instances */
-	spinlock_t pde_unload_lock;
-	struct completion *pde_unload_completion;
-	const struct inode_operations *proc_iops;
-	const struct file_operations *proc_fops;
-	const struct dentry_operations *proc_dops;
-	union {
-		const struct seq_operations *seq_ops;
-		int (*single_show)(struct seq_file *, void *);
-	};
-	proc_write_t write;
-	void *data;
-	unsigned int state_size;
-	unsigned int low_ino;
-	nlink_t nlink;
-	kuid_t uid;
-	kgid_t gid;
-	loff_t size;
-	struct proc_dir_entry *parent;
-	struct rb_root subdir;
-	struct rb_node subdir_node;
-	char *name;
-	umode_t mode;
-	u8 namelen;
-	char inline_name[];
-} __randomize_layout;
-
-static struct proc_dir_entry *uptime_proc_file;
-static struct proc_dir_entry *proc_root;
-
-static struct file_operations *uptime_proc_fops;
-
 static struct list_head *module_previous;
-static struct list_head *module_kobj_previous;
 
 static int param_kmod_hide(const char *, const struct kernel_param *);
+static int param_set_duration(const char *, const struct kernel_param *);
 
-module_param(uptime, long, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP);
-MODULE_PARM_DESC(uptime, "Sets uptime to this amount of jiffies");
+module_param_call(uptime, param_set_duration, param_get_ulong, &uptime,
+		  S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP);
+MODULE_PARM_DESC(uptime,
+		 "Adds this much time to the reported uptime. Accepts a plain "
+		 "seconds value (e.g. 12345) or a d/h/m/s combination "
+		 "(e.g. 1d2h30m, 5d 12h, 90s).");
 
-module_param(idletime, long, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP);
-MODULE_PARM_DESC(idletime, "Sets idletime to this amount of jiffies");
+module_param(idletime, ulong, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP);
+MODULE_PARM_DESC(idletime, "Adds this many seconds to the reported idle time");
 
 module_param_call(hideme, param_kmod_hide, param_get_bool, &hideme,
 		  S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP);
 MODULE_PARM_DESC(hideme, "Is LKM hidden? (y/n, default is n)");
 
-static void set_addr_rw(void *addr)
-{
-	unsigned int level;
-	pte_t *pte = lookup_address((unsigned long)addr, &level);
-	if (pte->pte & ~_PAGE_RW)
-		pte->pte |= _PAGE_RW;
-}
-
-static void set_addr_ro(void *addr)
-{
-	unsigned int level;
-	pte_t *pte = lookup_address((unsigned long)addr, &level);
-	pte->pte = pte->pte & ~_PAGE_RW;
-}
-
-void module_hide(void)
+static void module_hide(void)
 {
 	if (module_hidden)
 		return;
@@ -136,9 +56,8 @@ void module_hide(void)
 	module_previous = THIS_MODULE->list.prev;
 	list_del(&THIS_MODULE->list);
 
-	module_kobj_previous = THIS_MODULE->mkobj.kobj.entry.prev;
+	/* kobject_del already removes kobj from its kset list. */
 	kobject_del(&THIS_MODULE->mkobj.kobj);
-	list_del(&THIS_MODULE->mkobj.kobj.entry);
 	module_hidden = 1;
 
 #ifdef DEBUG
@@ -146,23 +65,93 @@ void module_hide(void)
 #endif
 }
 
-void module_show(void)
+static void module_show(void)
 {
-	int res = 0;
+	int res;
 	if (!module_hidden)
 		return;
 
-	list_add(&THIS_MODULE->list, module_previous);
+	/* sysfs first: avoid lsmod visibility without a backing node. */
 	res = kobject_add(&THIS_MODULE->mkobj.kobj,
 			  THIS_MODULE->mkobj.kobj.parent, MODULE_NAME);
 	if (res < 0) {
-		printk(KERN_ERR "failed to add uptime_hack module %d\n", res);
-	};
+		printk(KERN_ERR "%s: failed to unhide module: %d\n",
+		       MODULE_NAME, res);
+		return;
+	}
+	list_add(&THIS_MODULE->list, module_previous);
 	module_hidden = 0;
 
 #ifdef DEBUG
 	printk(KERN_INFO "%s: unhiding LKM\n", MODULE_NAME);
 #endif
+}
+
+/* Parses "<n>[d/h/m/s]..." or bare seconds; whitespace and newline tolerated. */
+static int param_set_duration(const char *val, const struct kernel_param *kp)
+{
+	unsigned long total = 0;
+	const char *p = val;
+
+	if (val == NULL)
+		return -EINVAL;
+
+	while (*p) {
+		unsigned long num, mult, scaled;
+		char *endp;
+
+		while (isspace(*p))
+			p++;
+		if (*p == '\0')
+			break;
+
+		if (!isdigit(*p))
+			return -EINVAL;
+
+		num = simple_strtoul(p, &endp, 10);
+		if (endp == p)
+			return -EINVAL;
+		p = endp;
+
+		while (isspace(*p))
+			p++;
+
+		switch (*p) {
+		case 'd':
+		case 'D':
+			mult = 24UL * 60 * 60;
+			p++;
+			break;
+		case 'h':
+		case 'H':
+			mult = 60UL * 60;
+			p++;
+			break;
+		case 'm':
+		case 'M':
+			mult = 60UL;
+			p++;
+			break;
+		case 's':
+		case 'S':
+			mult = 1UL;
+			p++;
+			break;
+		case '\0':
+			mult = 1UL;
+			break;
+		default:
+			return -EINVAL;
+		}
+
+		if (check_mul_overflow(num, mult, &scaled))
+			return -ERANGE;
+		if (check_add_overflow(total, scaled, &total))
+			return -ERANGE;
+	}
+
+	*((unsigned long *)kp->arg) = total;
+	return 0;
 }
 
 static int param_kmod_hide(const char *val, const struct kernel_param *kp)
@@ -172,7 +161,7 @@ static int param_kmod_hide(const char *val, const struct kernel_param *kp)
 	ret = param_set_bool(val, kp);
 	if (ret) {
 #ifdef DEBUG
-		printk(KERN_ALERT
+		printk(KERN_ERR
 		       "%s error: could not parse LKM hideme parameters\n",
 		       MODULE_NAME);
 #endif
@@ -187,129 +176,130 @@ static int param_kmod_hide(const char *val, const struct kernel_param *kp)
 	return 0;
 }
 
-static const struct proc_ops uptime_proc_fops2 = {
-    .proc_open = uptime_proc_open,
-    .proc_read = seq_read,
-    .proc_lseek = seq_lseek,
-    .proc_release = single_release,
-};
-
-static void proc_init(void)
-{
-	struct rb_node *node, *next;
-	uptime_proc_file =
-	    proc_create(MODULE_NAME, 0, NULL, &uptime_proc_fops2);
-	if (uptime_proc_file == NULL) {
-#ifdef DEBUG
-		printk(KERN_ALERT
-		       "%s error: could not create temporary /proc entry\n",
-		       MODULE_NAME);
-#endif
-		proc_failed = 1;
-		return;
-	}
-	proc_root = uptime_proc_file->parent;
-	if (proc_root == NULL || strcmp(proc_root->name, "/proc") != 0) {
-#ifdef DEBUG
-		printk(KERN_ALERT
-		       "%s error: could not identify /proc root entry\n",
-		       MODULE_NAME);
-#endif
-		proc_failed = 1;
-		return;
-	}
-
-	node = rb_first(&proc_root->subdir);
-	while (node) {
-		next = rb_next(node);
-		uptime_proc_file =
-		    rb_entry(node, struct proc_dir_entry, subdir_node);
-		if (strcmp(uptime_proc_file->name, PROCFS_NAME) == 0)
-			goto found;
-		node = next;
-	}
-	proc_failed = 1;
-#ifdef DEBUG
-	printk(KERN_ALERT "%s did not found /proc/%s file", MODULE_NAME,
-	       PROCFS_NAME);
-#endif
-	return;
-
-found:
-	uptime_proc_fops =
-	    (struct file_operations *)uptime_proc_file->proc_fops;
-	old_uptime_proc_open = uptime_proc_fops->open;
-
-	if (uptime_proc_fops != NULL) {
-		set_addr_rw(uptime_proc_fops);
-		uptime_proc_fops->open = uptime_proc_open;
-		set_addr_ro(uptime_proc_fops);
-
-#ifdef DEBUG
-		printk(KERN_INFO "%s: successfully wrapped /proc/%s\n",
-		       MODULE_NAME, PROCFS_NAME);
-#endif
-	}
-}
-
-static void proc_cleanup(void)
-{
-	if (!proc_failed && (uptime_proc_fops != NULL)) {
-		set_addr_rw(uptime_proc_fops);
-		uptime_proc_fops->open = old_uptime_proc_open;
-		set_addr_ro(uptime_proc_fops);
-
-#ifdef DEBUG
-		printk(KERN_INFO "%s: successfully unwrapped /proc/%s\n",
-		       MODULE_NAME, PROCFS_NAME);
-#endif
-	}
-#ifdef DEBUG
-	else
-		printk(KERN_INFO "%s: nothing to unwrap, exiting\n",
-		       MODULE_NAME);
-#endif
-}
-
-static int uptime_proc_show(struct seq_file *m, void *v)
+/* Mirrors upstream uptime_proc_show, adding configured offsets. */
+static int hooked_uptime_proc_show(struct seq_file *m, void *v)
 {
 	struct timespec64 real_uptime;
 	struct timespec64 real_idle;
+	struct kernel_cpustat kcs;
 	u64 nsec;
 	u32 rem;
 	int i;
 	nsec = 0;
-	for_each_possible_cpu(i)
-		nsec += (__force u64)kcpustat_cpu(i).cpustat[CPUTIME_IDLE];
+	for_each_possible_cpu(i) {
+		kcpustat_cpu_fetch(&kcs, i);
+		nsec += kcs.cpustat[CPUTIME_IDLE];
+	}
 	ktime_get_boottime_ts64(&real_uptime);
 	real_idle.tv_sec = div_u64_rem(nsec, NSEC_PER_SEC, &rem);
 	real_idle.tv_nsec = rem;
 	seq_printf(m, "%lu.%02lu %lu.%02lu\n",
-			(unsigned long) real_uptime.tv_sec + uptime,
-			(real_uptime.tv_nsec / (NSEC_PER_SEC / 100)),
-			(unsigned long) real_idle.tv_sec + idletime,
-			(real_idle.tv_nsec / (NSEC_PER_SEC / 100)));
+		   (unsigned long)real_uptime.tv_sec + uptime,
+		   (real_uptime.tv_nsec / (NSEC_PER_SEC / 100)),
+		   (unsigned long)real_idle.tv_sec + idletime,
+		   (real_idle.tv_nsec / (NSEC_PER_SEC / 100)));
 	return 0;
 }
 
-static int uptime_proc_open(struct inode *inode, struct file *file)
+static unsigned long target_addr;
+
+/* Redirect via regs->ip; within_module() guards against recursion. */
+static void notrace fh_callback(unsigned long ip, unsigned long parent_ip,
+				struct ftrace_ops *ops,
+				struct ftrace_regs *fregs)
 {
-	return single_open(file, uptime_proc_show, NULL);
+	struct pt_regs *regs = ftrace_get_regs(fregs);
+
+	if (regs == NULL)
+		return;
+	if (within_module(parent_ip, THIS_MODULE))
+		return;
+
+	regs->ip = (unsigned long)hooked_uptime_proc_show;
+}
+
+static struct ftrace_ops uptime_ftrace_ops = {
+	.func = fh_callback,
+	.flags = FTRACE_OPS_FL_SAVE_REGS | FTRACE_OPS_FL_IPMODIFY,
+};
+
+/* kallsyms_lookup_name unexported since 5.7; kprobe symbol_name fills kp.addr. */
+static unsigned long resolve_symbol(const char *name)
+{
+	struct kprobe kp = { .symbol_name = name };
+	unsigned long addr;
+	int ret;
+
+	ret = register_kprobe(&kp);
+	if (ret < 0)
+		return 0;
+	addr = (unsigned long)kp.addr;
+	unregister_kprobe(&kp);
+	return addr;
+}
+
+static int hook_install(void)
+{
+	int ret;
+
+	target_addr = resolve_symbol(TARGET_SYMBOL);
+	if (!target_addr) {
+		printk(KERN_ERR "%s: cannot resolve %s\n", MODULE_NAME,
+		       TARGET_SYMBOL);
+		return -ENOENT;
+	}
+
+	ret = ftrace_set_filter_ip(&uptime_ftrace_ops, target_addr, 0, 0);
+	if (ret) {
+		printk(KERN_ERR "%s: ftrace_set_filter_ip failed: %d\n",
+		       MODULE_NAME, ret);
+		return ret;
+	}
+
+	ret = register_ftrace_function(&uptime_ftrace_ops);
+	if (ret) {
+		printk(KERN_ERR "%s: register_ftrace_function failed: %d\n",
+		       MODULE_NAME, ret);
+		ftrace_set_filter_ip(&uptime_ftrace_ops, target_addr, 1, 0);
+		target_addr = 0;
+		return ret;
+	}
+
+#ifdef DEBUG
+	printk(KERN_INFO "%s: hooked %s at %lx\n", MODULE_NAME, TARGET_SYMBOL,
+	       target_addr);
+#endif
+	return 0;
+}
+
+static void hook_remove(void)
+{
+	if (!target_addr)
+		return;
+
+	unregister_ftrace_function(&uptime_ftrace_ops);
+	ftrace_set_filter_ip(&uptime_ftrace_ops, target_addr, 1, 0);
+	target_addr = 0;
+
+#ifdef DEBUG
+	printk(KERN_INFO "%s: unhooked %s\n", MODULE_NAME, TARGET_SYMBOL);
+#endif
 }
 
 static int __init uptime_init(void)
 {
-	proc_init();
-
-	return 0;
+	return hook_install();
 }
 
-static void __exit uptime_cleanup(void) { proc_cleanup(); }
+static void __exit uptime_cleanup(void)
+{
+	hook_remove();
+}
 
 module_init(uptime_init);
 module_exit(uptime_cleanup);
 
 MODULE_AUTHOR("Dinko Korunic <dinko.korunic@gmail.com>");
-MODULE_DESCRIPTION("procfs uptime hack");
+MODULE_DESCRIPTION("procfs uptime hack (ftrace-based)");
 MODULE_LICENSE("GPL");
 MODULE_VERSION(MODULE_VERS);
