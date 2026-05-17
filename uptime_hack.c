@@ -17,19 +17,18 @@
 #include <linux/module.h>
 #include <linux/overflow.h>
 #include <linux/seq_file.h>
+#include <linux/time_namespace.h>
 #include <linux/timekeeping.h>
 
-#define MODULE_VERS "1.8"
+#define MODULE_VERS "1.9"
 #define MODULE_NAME "uptime_hack"
 #define TARGET_SYMBOL "uptime_proc_show"
 
-static long unsigned uptime = 0;
-static long unsigned idletime = 0;
+static unsigned long uptime = 0;
+static unsigned long idletime = 0;
 
-static char hideme = 0;
-static char module_hidden = 0;
-
-static struct list_head *module_previous;
+static bool hideme = false;
+static bool module_hidden = false;
 
 static int param_kmod_hide(const char *, const struct kernel_param *);
 static int param_set_duration(const char *, const struct kernel_param *);
@@ -48,56 +47,34 @@ module_param_call(hideme, param_kmod_hide, param_get_bool, &hideme,
 		  S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP);
 MODULE_PARM_DESC(hideme, "Is LKM hidden? (y/n, default is n)");
 
+/* One-way: drops the sysfs node that backs the hideme setter. */
 static void module_hide(void)
 {
 	if (module_hidden)
 		return;
 
-	module_previous = THIS_MODULE->list.prev;
 	list_del(&THIS_MODULE->list);
-
-	/* kobject_del already removes kobj from its kset list. */
 	kobject_del(&THIS_MODULE->mkobj.kobj);
-	module_hidden = 1;
+	module_hidden = true;
 
 #ifdef DEBUG
 	printk(KERN_INFO "%s: hiding LKM\n", MODULE_NAME);
 #endif
 }
 
-static void module_show(void)
-{
-	int res;
-	if (!module_hidden)
-		return;
-
-	/* sysfs first: avoid lsmod visibility without a backing node. */
-	res = kobject_add(&THIS_MODULE->mkobj.kobj,
-			  THIS_MODULE->mkobj.kobj.parent, MODULE_NAME);
-	if (res < 0) {
-		printk(KERN_ERR "%s: failed to unhide module: %d\n",
-		       MODULE_NAME, res);
-		return;
-	}
-	list_add(&THIS_MODULE->list, module_previous);
-	module_hidden = 0;
-
-#ifdef DEBUG
-	printk(KERN_INFO "%s: unhiding LKM\n", MODULE_NAME);
-#endif
-}
-
-/* Parses "<n>[d/h/m/s]..." or bare seconds; whitespace and newline tolerated. */
+/* Accepts d/h/m/s tokens or bare seconds. */
 static int param_set_duration(const char *val, const struct kernel_param *kp)
 {
 	unsigned long total = 0;
 	const char *p = val;
+	bool got_token = false;
 
 	if (val == NULL)
 		return -EINVAL;
 
 	while (*p) {
 		unsigned long num, mult, scaled;
+		const char *digits;
 		char *endp;
 
 		while (isspace(*p))
@@ -108,9 +85,13 @@ static int param_set_duration(const char *val, const struct kernel_param *kp)
 		if (!isdigit(*p))
 			return -EINVAL;
 
+		digits = p;
 		num = simple_strtoul(p, &endp, 10);
 		if (endp == p)
 			return -EINVAL;
+		/* simple_strtoul silently wraps; cap digits to stay inside u64. */
+		if (endp - digits > 18)
+			return -ERANGE;
 		p = endp;
 
 		while (isspace(*p))
@@ -148,9 +129,13 @@ static int param_set_duration(const char *val, const struct kernel_param *kp)
 			return -ERANGE;
 		if (check_add_overflow(total, scaled, &total))
 			return -ERANGE;
+		got_token = true;
 	}
 
-	*((unsigned long *)kp->arg) = total;
+	if (!got_token)
+		return -EINVAL;
+
+	WRITE_ONCE(*((unsigned long *)kp->arg), total);
 	return 0;
 }
 
@@ -168,54 +153,57 @@ static int param_kmod_hide(const char *val, const struct kernel_param *kp)
 		return ret;
 	}
 
+	/* Only n->y is reachable; the sysfs file is gone after hiding. */
 	if (hideme)
 		module_hide();
-	else
-		module_show();
 
 	return 0;
 }
 
 /* Mirrors upstream uptime_proc_show, adding configured offsets. */
-static int hooked_uptime_proc_show(struct seq_file *m, void *v)
+static int notrace hooked_uptime_proc_show(struct seq_file *m, void *v)
 {
 	struct timespec64 real_uptime;
 	struct timespec64 real_idle;
-	struct kernel_cpustat kcs;
+	unsigned long uptime_off, idle_off;
 	u64 nsec;
 	u32 rem;
 	int i;
+
 	nsec = 0;
-	for_each_possible_cpu(i) {
-		kcpustat_cpu_fetch(&kcs, i);
-		nsec += kcs.cpustat[CPUTIME_IDLE];
-	}
+	for_each_possible_cpu(i)
+		nsec += (__force u64)kcpustat_cpu(i).cpustat[CPUTIME_IDLE];
+
 	ktime_get_boottime_ts64(&real_uptime);
+	timens_add_boottime(&real_uptime);
+
 	real_idle.tv_sec = div_u64_rem(nsec, NSEC_PER_SEC, &rem);
 	real_idle.tv_nsec = rem;
+
+	/* Snapshot both offsets once so the two columns are consistent. */
+	uptime_off = READ_ONCE(uptime);
+	idle_off = READ_ONCE(idletime);
+
 	seq_printf(m, "%lu.%02lu %lu.%02lu\n",
-		   (unsigned long)real_uptime.tv_sec + uptime,
+		   (unsigned long)real_uptime.tv_sec + uptime_off,
 		   (real_uptime.tv_nsec / (NSEC_PER_SEC / 100)),
-		   (unsigned long)real_idle.tv_sec + idletime,
+		   (unsigned long)real_idle.tv_sec + idle_off,
 		   (real_idle.tv_nsec / (NSEC_PER_SEC / 100)));
 	return 0;
 }
 
 static unsigned long target_addr;
 
-/* Redirect via regs->ip; within_module() guards against recursion. */
+/* Arch-portable IP rewrite; within_module() guards against future recursion. */
 static void notrace fh_callback(unsigned long ip, unsigned long parent_ip,
 				struct ftrace_ops *ops,
 				struct ftrace_regs *fregs)
 {
-	struct pt_regs *regs = ftrace_get_regs(fregs);
-
-	if (regs == NULL)
-		return;
 	if (within_module(parent_ip, THIS_MODULE))
 		return;
 
-	regs->ip = (unsigned long)hooked_uptime_proc_show;
+	ftrace_regs_set_instruction_pointer(
+		fregs, (unsigned long)hooked_uptime_proc_show);
 }
 
 static struct ftrace_ops uptime_ftrace_ops = {

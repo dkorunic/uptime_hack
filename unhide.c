@@ -1,16 +1,13 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 /*
- * One-shot helper that re-lists a hidden uptime_hack module.
- *
- * Hidden modules stay in mod_tree, so __module_address() resolves any
- * text address (e.g. from /proc/kallsyms) back to the struct module *.
+ * Re-lists a hidden uptime_hack module via __module_address(target).
  *
  * Usage:
  *   target=$(awk '/\[uptime_hack\]/{print "0x"$1; exit}' /proc/kallsyms)
  *   sudo insmod ./unhide.ko target=$target
  *   sudo rmmod uptime_hack && sudo rmmod unhide
  *
- * Does not hold module_mutex; do not run concurrently with insmod/rmmod.
+ * Not module_mutex-safe; do not race with insmod/rmmod.
  */
 
 #include <linux/init.h>

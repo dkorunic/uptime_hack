@@ -16,4 +16,7 @@ modules_install:
 clean:
 	$(MAKE) -C $(KERNELDIR) M=$(PWD) clean
 
+fmt:
+	clang-format -i $(wildcard *.c)
+
 endif
