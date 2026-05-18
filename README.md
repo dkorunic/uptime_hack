@@ -23,7 +23,7 @@ NixOS).
 | Parameter  | Type                        | Meaning                                                    |
 | ---------- | --------------------------- | ---------------------------------------------------------- |
 | `uptime`   | duration string (see below) | Seconds (or y/d/h/m/s combination) added to `/proc/uptime` |
-| `idletime` | unsigned long               | Seconds added to the idle-time column of `/proc/uptime`    |
+| `idletime` | unsigned long long (u64)    | Seconds added to the idle-time column of `/proc/uptime`    |
 | `hideme`   | bool (`y`/`n`)              | Hide the module from `lsmod`/`/sys/module`                 |
 
 The `uptime` parameter accepts either a plain integer (seconds, the
@@ -44,8 +44,8 @@ one of `y`, `d`, `h`, `m`, `s` (case-insensitive). One year is treated as
 | `1d 2h 3m 4s` | 93784            |
 
 Malformed input is rejected with `-EINVAL`; arithmetic that would overflow
-`unsigned long` is rejected with `-ERANGE`. The previous parameter value is
-preserved on rejection.
+a 64-bit unsigned value is rejected with `-ERANGE`. The previous parameter
+value is preserved on rejection.
 
 # Usage
 
@@ -102,13 +102,33 @@ root@vampirella:~# lsmod | grep uptime_hack
 root@vampirella:~#
 ```
 
-> **Warning — hiding is one-way.** `module_hide()` delists the module from
-> `THIS_MODULE->list` and removes its kobject from `/sys/module/`. After
-> that point `/sys/module/uptime_hack/parameters/hideme` no longer exists
-> (so you cannot write `n` to it), and `rmmod uptime_hack` fails because
-> `find_module()` only walks the public list. The hook keeps working, but
-> the module cannot be unloaded without a reboot. Only enable `hideme=y`
-> if that's acceptable.
+> **Warning — hiding is one-way at runtime.** `module_hide()` delists the
+> module from `THIS_MODULE->list` and removes its kobject from
+> `/sys/module/`. After that point `/sys/module/uptime_hack/parameters/hideme`
+> no longer exists (so you cannot write `n` to it), and `rmmod uptime_hack`
+> fails because `find_module()` only walks the public list. The hook keeps
+> working. To unload again, use the bundled `unhide.ko` helper (see below)
+> — otherwise the module sticks until reboot.
+
+# Recovering a hidden module
+
+The repo ships a companion module, `unhide.ko`, that resurrects a hidden
+`uptime_hack` so it can be `rmmod`'d normally. It needs any kernel-text
+address inside the hidden module (e.g. one of its still-listed symbols in
+`/proc/kallsyms`), passed as the `target=` parameter:
+
+```
+root@vampirella:~# target=$(awk '/\[uptime_hack\]/{print "0x"$1; exit}' /proc/kallsyms)
+root@vampirella:~# sudo insmod ./unhide.ko target=$target
+root@vampirella:~# sudo rmmod uptime_hack
+root@vampirella:~# sudo rmmod unhide
+```
+
+`unhide` looks up `__module_address` via the same kprobe trick used by
+`uptime_hack` itself, calls it on `target` to get the hidden `struct
+module *`, then re-adds it to the module list and `/sys/module/` if
+needed. It is not `module_mutex`-safe, so do not race it against concurrent
+`insmod`/`rmmod`.
 
 # Build
 
@@ -141,9 +161,18 @@ On load, the module:
    instruction-pointer.
 3. Calls `register_ftrace_function()` with `FTRACE_OPS_FL_SAVE_REGS |
 FTRACE_OPS_FL_IPMODIFY`. From this point, every call to
-   `uptime_proc_show` enters the module's `fh_callback`, which rewrites
-   `regs->ip` to point at the replacement `hooked_uptime_proc_show`. When
-   the callback returns, control resumes at the replacement.
+   `uptime_proc_show` enters the module's `fh_callback`, which calls
+   `ftrace_regs_set_instruction_pointer()` on the saved `struct
+ftrace_regs` to point at the replacement `hooked_uptime_proc_show`.
+   When the callback returns, control resumes at the replacement. The
+   helper is used instead of poking `pt_regs->ip` directly so the hook
+   stays arch-portable.
+
+   A `within_module(parent_ip, THIS_MODULE)` guard at the top of
+   `fh_callback` short-circuits any call that originates from inside this
+   module's own text. If a future change to the replacement ever calls a
+   filtered function back, the guard keeps that call from being
+   redirected to itself.
 
 The replacement mirrors the upstream `uptime_proc_show` body, adding the
 configured `uptime` / `idletime` offsets before `seq_printf`. Because the
