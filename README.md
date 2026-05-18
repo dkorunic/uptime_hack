@@ -97,9 +97,13 @@ root@vampirella:~# uptime
 
 # …and '+'-prefixed = additive seconds on top of real uptime
 root@vampirella:~# echo +102021 > /sys/module/uptime_hack/parameters/uptime
+root@vampirella:~# uptime
+ 18:59:38 up 14 days,  8:41,  1 user,  load average: 0.15, 0.22, 0.27
 
 # Whitespace between components is fine (remember to quote in the shell)
 root@vampirella:~# echo "+1d 2h 3m 4s" > /sys/module/uptime_hack/parameters/uptime
+root@vampirella:~# uptime
+ 19:00:04 up 14 days,  6:25,  1 user,  load average: 0.15, 0.22, 0.27
 
 # Read the current value back — leading '+' indicates additive mode
 root@vampirella:~# cat /sys/module/uptime_hack/parameters/uptime
@@ -107,12 +111,20 @@ root@vampirella:~# cat /sys/module/uptime_hack/parameters/uptime
 
 # Reset to true uptime — '0' (with or without '+') is special-cased
 root@vampirella:~# echo 0 > /sys/module/uptime_hack/parameters/uptime
+root@vampirella:~# uptime
+ 19:00:30 up 13 days,  4:22,  1 user,  load average: 0.15, 0.22, 0.27
 ```
 
-Idle time can be offset independently (plain seconds only, always additive):
+Idle time can be offset independently (plain seconds only, always additive).
+The effect is only visible in `/proc/uptime` directly — `uptime(1)` ignores the
+idle column:
 
 ```
+root@vampirella:~# cat /proc/uptime
+1140271.42 4523890.11
 root@vampirella:~# insmod uptime_hack.ko uptime=+1d idletime=43200
+root@vampirella:~# cat /proc/uptime
+1226672.84 4567092.37
 ```
 
 The module can also hide itself from `lsmod` and `/sys/module`:
