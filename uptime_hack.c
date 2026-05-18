@@ -26,19 +26,24 @@
 
 static u64 uptime = 0;
 static u64 idletime = 0;
+static bool uptime_additive = true;
 
 static bool hideme = false;
 static bool module_hidden = false;
 
 static int param_kmod_hide(const char *, const struct kernel_param *);
 static int param_set_duration(const char *, const struct kernel_param *);
+static int param_get_duration(char *, const struct kernel_param *);
 
-module_param_call(uptime, param_set_duration, param_get_ullong, &uptime,
+module_param_call(uptime, param_set_duration, param_get_duration, &uptime,
 		  S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP);
 MODULE_PARM_DESC(uptime,
-		 "Adds this much time to the reported uptime. Accepts a plain "
-		 "seconds value (e.g. 12345) or a y/d/h/m/s combination "
-		 "(e.g. 1y2d, 1d2h30m, 5d 12h, 90s). One year = 365 days.");
+		 "Reported /proc/uptime override. A bare value (e.g. 12345, "
+		 "1d2h, 1y) sets the uptime absolutely. A '+'-prefixed value "
+		 "(e.g. +1d, +90s) adds to the real boot-time uptime instead. "
+		 "Accepts seconds or a y/d/h/m/s combination. One year = 365 "
+		 "days. The value 0 (with or without '+') always means 'show "
+		 "the real uptime'.");
 
 module_param(idletime, ullong, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP);
 MODULE_PARM_DESC(idletime, "Adds this many seconds to the reported idle time");
@@ -68,9 +73,18 @@ static int param_set_duration(const char *val, const struct kernel_param *kp)
 	u64 total = 0;
 	const char *p = val;
 	bool got_token = false;
+	bool additive = false;
 
 	if (val == NULL)
 		return -EINVAL;
+
+	while (isspace(*p))
+		p++;
+
+	if (*p == '+') {
+		additive = true;
+		p++;
+	}
 
 	while (*p) {
 		u64 num, mult, scaled;
@@ -140,8 +154,22 @@ static int param_set_duration(const char *val, const struct kernel_param *kp)
 	if (!got_token)
 		return -EINVAL;
 
+	/* '0' is the historical reset sentinel. */
+	if (total == 0)
+		additive = true;
+
+	/* Publish value before flag so racing readers never pair new flag with stale value. */
 	WRITE_ONCE(*((u64 *)kp->arg), total);
+	WRITE_ONCE(uptime_additive, additive);
 	return 0;
+}
+
+static int param_get_duration(char *buf, const struct kernel_param *kp)
+{
+	u64 val = READ_ONCE(*(u64 *)kp->arg);
+	bool add = READ_ONCE(uptime_additive);
+
+	return sprintf(buf, "%s%llu\n", (add && val) ? "+" : "", val);
 }
 
 static int param_kmod_hide(const char *val, const struct kernel_param *kp)
@@ -169,7 +197,8 @@ static int notrace hooked_uptime_proc_show(struct seq_file *m, void *v)
 {
 	struct timespec64 real_uptime;
 	struct timespec64 real_idle;
-	u64 uptime_off, idle_off;
+	u64 uptime_val, idle_off, shown_uptime;
+	bool additive;
 	u64 nsec;
 	u32 rem;
 	int i;
@@ -184,12 +213,14 @@ static int notrace hooked_uptime_proc_show(struct seq_file *m, void *v)
 	real_idle.tv_sec = div_u64_rem(nsec, NSEC_PER_SEC, &rem);
 	real_idle.tv_nsec = rem;
 
-	/* Both columns must reflect the same offsets. */
-	uptime_off = READ_ONCE(uptime);
+	uptime_val = READ_ONCE(uptime);
+	additive = READ_ONCE(uptime_additive);
 	idle_off = READ_ONCE(idletime);
 
-	seq_printf(m, "%llu.%02llu %llu.%02llu\n",
-		   (u64)real_uptime.tv_sec + uptime_off,
+	shown_uptime = additive ? (u64)real_uptime.tv_sec + uptime_val :
+				  uptime_val;
+
+	seq_printf(m, "%llu.%02llu %llu.%02llu\n", shown_uptime,
 		   (u64)(real_uptime.tv_nsec / (NSEC_PER_SEC / 100)),
 		   (u64)real_idle.tv_sec + idle_off,
 		   (u64)(real_idle.tv_nsec / (NSEC_PER_SEC / 100)));

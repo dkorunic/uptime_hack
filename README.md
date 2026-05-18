@@ -5,9 +5,10 @@ A Linux kernel module that fakes the system uptime reported by `/proc/uptime`
 
 The module installs an **ftrace function hook** on the kernel's
 `uptime_proc_show`, so every read of `/proc/uptime` runs a replacement that
-adds the configured offset before emitting the value. No `/proc` entries are
-replaced, no kernel rodata is patched, and the hook survives across all
-6.x kernels.
+either substitutes an absolute value for the uptime or adds a configured
+offset on top of the real one, depending on how the parameter was set.
+No `/proc` entries are replaced, no kernel rodata is patched, and the hook
+survives across all 6.x kernels.
 
 Tested against Linux 6.12. Requires the running kernel to be built with:
 
@@ -20,32 +21,53 @@ NixOS).
 
 # Parameters
 
-| Parameter  | Type                        | Meaning                                                    |
-| ---------- | --------------------------- | ---------------------------------------------------------- |
-| `uptime`   | duration string (see below) | Seconds (or y/d/h/m/s combination) added to `/proc/uptime` |
-| `idletime` | unsigned long long (u64)    | Seconds added to the idle-time column of `/proc/uptime`    |
-| `hideme`   | bool (`y`/`n`)              | Hide the module from `lsmod`/`/sys/module`                 |
+| Parameter  | Type                        | Meaning                                                                                  |
+| ---------- | --------------------------- | ---------------------------------------------------------------------------------------- |
+| `uptime`   | duration string (see below) | Absolute uptime to report, or an offset added to the real uptime when prefixed with `+`. |
+| `idletime` | unsigned long long (u64)    | Seconds added to the idle-time column of `/proc/uptime`                                  |
+| `hideme`   | bool (`y`/`n`)              | Hide the module from `lsmod`/`/sys/module`                                               |
 
-The `uptime` parameter accepts either a plain integer (seconds, the
-historical form) or a sequence of `<number><unit>` tokens where `<unit>` is
-one of `y`, `d`, `h`, `m`, `s` (case-insensitive). One year is treated as
-365 days. Whitespace between components is allowed. Examples:
+The `uptime` parameter has two modes:
 
-| Input         | Resolved seconds |
-| ------------- | ---------------- |
-| `12345`       | 12345            |
-| `30m`         | 1800             |
-| `2h`          | 7200             |
-| `1d`          | 86400            |
-| `1y`          | 31536000         |
-| `1d2h30m`     | 95400            |
-| `5d 12h`      | 475200           |
-| `1y 30d`      | 34128000         |
-| `1d 2h 3m 4s` | 93784            |
+- **Absolute** (bare value, no prefix). The reported uptime is set to
+  exactly the parsed duration. Example: `uptime=1d` makes `/proc/uptime`
+  report ~1 day regardless of how long the system has actually been
+  running. The seconds column stays frozen at the configured value
+  between writes — only the fractional part keeps ticking.
+- **Additive** (`+` prefix). The parsed duration is added to the real
+  boot-time uptime, and the result keeps ticking forward normally.
+  Example: `uptime=+1d` makes `/proc/uptime` report "real uptime + 1
+  day" and continues to advance.
+
+The value `0` is treated specially: with or without the `+` prefix, it
+always means "show the real boot-time uptime." This preserves the
+historical "reset" idiom (`echo 0 > …/uptime`) and means that a freshly
+loaded module — whose default state is `uptime=0` — reports the unaltered
+real uptime until you write a new value. Reading the parameter back via
+sysfs after a reset returns the bare form (`0`, not `+0`).
+
+The duration syntax is the same in both modes: a plain integer (seconds,
+the historical form) or a sequence of `<number><unit>` tokens where
+`<unit>` is one of `y`, `d`, `h`, `m`, `s` (case-insensitive). One year is
+treated as 365 days. Whitespace between components is allowed. Examples:
+
+| Input          | Resolved seconds | Mode     |
+| -------------- | ---------------- | -------- |
+| `12345`        | 12345            | absolute |
+| `30m`          | 1800             | absolute |
+| `1d2h30m`      | 95400            | absolute |
+| `1y 30d`       | 34128000         | absolute |
+| `+12345`       | 12345            | additive |
+| `+1d`          | 86400            | additive |
+| `+5d 12h`      | 475200           | additive |
+| `+1d 2h 3m 4s` | 93784            | additive |
+
+Reading the parameter back via sysfs preserves the mode: an absolute value
+reads as a bare number, an additive value reads with a leading `+`.
 
 Malformed input is rejected with `-EINVAL`; arithmetic that would overflow
 a 64-bit unsigned value is rejected with `-ERANGE`. The previous parameter
-value is preserved on rejection.
+value and mode are preserved on rejection.
 
 # Usage
 
@@ -53,41 +75,44 @@ value is preserved on rejection.
 root@vampirella:~# uptime
  18:57:15 up 13 days,  4:19,  1 user,  load average: 0.21, 0.18, 0.17
 
-# Load with a starting offset of 1 day
-root@vampirella:~# insmod uptime_hack.ko uptime=1d
+# Additive: pretend the box has been up an extra day on top of the real uptime
+root@vampirella:~# insmod uptime_hack.ko uptime=+1d
 root@vampirella:~# uptime
  18:57:46 up 14 days,  4:20,  1 user,  load average: 0.14, 0.23, 0.27
 
-# Adjust at runtime via sysfs — backward-compatible bare seconds still work
-root@vampirella:~# echo 102021 > /sys/module/uptime_hack/parameters/uptime
-root@vampirella:~# uptime
- 18:58:25 up 14 days,  8:40,  1 user,  load average: 0.15, 0.22, 0.27
-
-# …or use the y/d/h/m/s suffix syntax
+# Absolute: pin the reported uptime to exactly 5 days, 12h30m (no '+' prefix)
 root@vampirella:~# echo 5d12h30m > /sys/module/uptime_hack/parameters/uptime
 root@vampirella:~# uptime
- 18:58:30 up 18 days, 16:51,  1 user,  load average: 0.15, 0.22, 0.27
+ 18:58:30 up 5 days, 12:30,  1 user,  load average: 0.15, 0.22, 0.27
 
-# Years work too (1y = 365 days)
+# Absolute: years work too (1y = 365 days, so 2y = 730 days exactly)
 root@vampirella:~# echo 2y > /sys/module/uptime_hack/parameters/uptime
 root@vampirella:~# uptime
- 18:58:35 up 2 years, 13 days, 4:20,  1 user,  load average: 0.15, 0.22, 0.27
+ 18:58:35 up 730 days, 0 min,  1 user,  load average: 0.15, 0.22, 0.27
+
+# Plain integer is still accepted in both modes — bare = absolute seconds
+root@vampirella:~# echo 102021 > /sys/module/uptime_hack/parameters/uptime
+root@vampirella:~# uptime
+ 18:59:25 up 1 day,  4:20,  1 user,  load average: 0.15, 0.22, 0.27
+
+# …and '+'-prefixed = additive seconds on top of real uptime
+root@vampirella:~# echo +102021 > /sys/module/uptime_hack/parameters/uptime
 
 # Whitespace between components is fine (remember to quote in the shell)
-root@vampirella:~# echo "1d 2h 3m 4s" > /sys/module/uptime_hack/parameters/uptime
+root@vampirella:~# echo "+1d 2h 3m 4s" > /sys/module/uptime_hack/parameters/uptime
 
-# Read the current offset back
+# Read the current value back — leading '+' indicates additive mode
 root@vampirella:~# cat /sys/module/uptime_hack/parameters/uptime
-93784
++93784
 
-# Reset to true uptime
+# Reset to true uptime — '0' (with or without '+') is special-cased
 root@vampirella:~# echo 0 > /sys/module/uptime_hack/parameters/uptime
 ```
 
-Idle time can be offset independently (plain seconds only):
+Idle time can be offset independently (plain seconds only, always additive):
 
 ```
-root@vampirella:~# insmod uptime_hack.ko uptime=1d idletime=43200
+root@vampirella:~# insmod uptime_hack.ko uptime=+1d idletime=43200
 ```
 
 The module can also hide itself from `lsmod` and `/sys/module`:
@@ -174,10 +199,12 @@ ftrace_regs` to point at the replacement `hooked_uptime_proc_show`.
    filtered function back, the guard keeps that call from being
    redirected to itself.
 
-The replacement mirrors the upstream `uptime_proc_show` body, adding the
-configured `uptime` / `idletime` offsets before `seq_printf`. Because the
-offsets are read on every call, sysfs writes take effect immediately on the
-next read of `/proc/uptime`.
+The replacement mirrors the upstream `uptime_proc_show` body. For the
+uptime column it either uses the configured value directly (absolute mode)
+or adds it to the real boot-time uptime (additive mode, selected by the
+`+` prefix). The idle-time column is always additive. Because the value
+and mode flag are read on every call, sysfs writes take effect immediately
+on the next read of `/proc/uptime`.
 
 On unload, `unregister_ftrace_function()` + `ftrace_set_filter_ip(remove=1)`
 detaches the hook. ftrace's internal synchronization ensures in-flight
