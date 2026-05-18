@@ -61,7 +61,7 @@ root@vampirella:~# uptime
 # Adjust at runtime via sysfs — backward-compatible bare seconds still work
 root@vampirella:~# echo 102021 > /sys/module/uptime_hack/parameters/uptime
 root@vampirella:~# uptime
- 18:58:25 up 14 days,  4:39,  1 user,  load average: 0.15, 0.22, 0.27
+ 18:58:25 up 14 days,  8:40,  1 user,  load average: 0.15, 0.22, 0.27
 
 # …or use the y/d/h/m/s suffix syntax
 root@vampirella:~# echo 5d12h30m > /sys/module/uptime_hack/parameters/uptime
