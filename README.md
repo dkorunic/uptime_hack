@@ -20,16 +20,16 @@ NixOS).
 
 # Parameters
 
-| Parameter  | Type                        | Meaning                                                  |
-| ---------- | --------------------------- | -------------------------------------------------------- |
-| `uptime`   | duration string (see below) | Seconds (or d/h/m/s combination) added to `/proc/uptime` |
-| `idletime` | unsigned long               | Seconds added to the idle-time column of `/proc/uptime`  |
-| `hideme`   | bool (`y`/`n`)              | Hide the module from `lsmod`/`/sys/module`               |
+| Parameter  | Type                        | Meaning                                                    |
+| ---------- | --------------------------- | ---------------------------------------------------------- |
+| `uptime`   | duration string (see below) | Seconds (or y/d/h/m/s combination) added to `/proc/uptime` |
+| `idletime` | unsigned long               | Seconds added to the idle-time column of `/proc/uptime`    |
+| `hideme`   | bool (`y`/`n`)              | Hide the module from `lsmod`/`/sys/module`                 |
 
 The `uptime` parameter accepts either a plain integer (seconds, the
 historical form) or a sequence of `<number><unit>` tokens where `<unit>` is
-one of `d`, `h`, `m`, `s` (case-insensitive). Whitespace between components
-is allowed. Examples:
+one of `y`, `d`, `h`, `m`, `s` (case-insensitive). One year is treated as
+365 days. Whitespace between components is allowed. Examples:
 
 | Input         | Resolved seconds |
 | ------------- | ---------------- |
@@ -37,8 +37,10 @@ is allowed. Examples:
 | `30m`         | 1800             |
 | `2h`          | 7200             |
 | `1d`          | 86400            |
+| `1y`          | 31536000         |
 | `1d2h30m`     | 95400            |
 | `5d 12h`      | 475200           |
+| `1y 30d`      | 34128000         |
 | `1d 2h 3m 4s` | 93784            |
 
 Malformed input is rejected with `-EINVAL`; arithmetic that would overflow
@@ -61,10 +63,15 @@ root@vampirella:~# echo 102021 > /sys/module/uptime_hack/parameters/uptime
 root@vampirella:~# uptime
  18:58:25 up 14 days,  4:39,  1 user,  load average: 0.15, 0.22, 0.27
 
-# …or use the d/h/m/s suffix syntax
+# …or use the y/d/h/m/s suffix syntax
 root@vampirella:~# echo 5d12h30m > /sys/module/uptime_hack/parameters/uptime
 root@vampirella:~# uptime
  18:58:30 up 18 days, 16:51,  1 user,  load average: 0.15, 0.22, 0.27
+
+# Years work too (1y = 365 days)
+root@vampirella:~# echo 2y > /sys/module/uptime_hack/parameters/uptime
+root@vampirella:~# uptime
+ 18:58:35 up 2 years, 13 days, 4:20,  1 user,  load average: 0.15, 0.22, 0.27
 
 # Whitespace between components is fine (remember to quote in the shell)
 root@vampirella:~# echo "1d 2h 3m 4s" > /sys/module/uptime_hack/parameters/uptime

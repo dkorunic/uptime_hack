@@ -37,8 +37,8 @@ module_param_call(uptime, param_set_duration, param_get_ulong, &uptime,
 		  S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP);
 MODULE_PARM_DESC(uptime,
 		 "Adds this much time to the reported uptime. Accepts a plain "
-		 "seconds value (e.g. 12345) or a d/h/m/s combination "
-		 "(e.g. 1d2h30m, 5d 12h, 90s).");
+		 "seconds value (e.g. 12345) or a y/d/h/m/s combination "
+		 "(e.g. 1y2d, 1d2h30m, 5d 12h, 90s). One year = 365 days.");
 
 module_param(idletime, ulong, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP);
 MODULE_PARM_DESC(idletime, "Adds this many seconds to the reported idle time");
@@ -62,7 +62,7 @@ static void module_hide(void)
 #endif
 }
 
-/* Accepts d/h/m/s tokens or bare seconds. */
+/* Accepts y/d/h/m/s tokens or bare seconds. One year = 365 days. */
 static int param_set_duration(const char *val, const struct kernel_param *kp)
 {
 	unsigned long total = 0;
@@ -98,6 +98,11 @@ static int param_set_duration(const char *val, const struct kernel_param *kp)
 			p++;
 
 		switch (*p) {
+		case 'y':
+		case 'Y':
+			mult = 365UL * 24 * 60 * 60;
+			p++;
+			break;
 		case 'd':
 		case 'D':
 			mult = 24UL * 60 * 60;
