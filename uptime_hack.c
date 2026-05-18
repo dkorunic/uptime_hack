@@ -20,12 +20,12 @@
 #include <linux/time_namespace.h>
 #include <linux/timekeeping.h>
 
-#define MODULE_VERS "1.9"
+#define MODULE_VERS "2.0"
 #define MODULE_NAME "uptime_hack"
 #define TARGET_SYMBOL "uptime_proc_show"
 
-static unsigned long uptime = 0;
-static unsigned long idletime = 0;
+static u64 uptime = 0;
+static u64 idletime = 0;
 
 static bool hideme = false;
 static bool module_hidden = false;
@@ -33,14 +33,14 @@ static bool module_hidden = false;
 static int param_kmod_hide(const char *, const struct kernel_param *);
 static int param_set_duration(const char *, const struct kernel_param *);
 
-module_param_call(uptime, param_set_duration, param_get_ulong, &uptime,
+module_param_call(uptime, param_set_duration, param_get_ullong, &uptime,
 		  S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP);
 MODULE_PARM_DESC(uptime,
 		 "Adds this much time to the reported uptime. Accepts a plain "
 		 "seconds value (e.g. 12345) or a y/d/h/m/s combination "
 		 "(e.g. 1y2d, 1d2h30m, 5d 12h, 90s). One year = 365 days.");
 
-module_param(idletime, ulong, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP);
+module_param(idletime, ullong, S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP);
 MODULE_PARM_DESC(idletime, "Adds this many seconds to the reported idle time");
 
 module_param_call(hideme, param_kmod_hide, param_get_bool, &hideme,
@@ -62,10 +62,10 @@ static void module_hide(void)
 #endif
 }
 
-/* Accepts y/d/h/m/s tokens or bare seconds. One year = 365 days. */
+/* 1 year = 365 days. */
 static int param_set_duration(const char *val, const struct kernel_param *kp)
 {
-	unsigned long total = 0;
+	u64 total = 0;
 	const char *p = val;
 	bool got_token = false;
 
@@ -73,7 +73,7 @@ static int param_set_duration(const char *val, const struct kernel_param *kp)
 		return -EINVAL;
 
 	while (*p) {
-		unsigned long num, mult, scaled;
+		u64 num, mult, scaled;
 		const char *digits;
 		char *endp;
 
@@ -86,11 +86,11 @@ static int param_set_duration(const char *val, const struct kernel_param *kp)
 			return -EINVAL;
 
 		digits = p;
-		num = simple_strtoul(p, &endp, 10);
+		num = simple_strtoull(p, &endp, 10);
 		if (endp == p)
 			return -EINVAL;
-		/* simple_strtoul silently wraps; cap digits to stay inside u64. */
-		if (endp - digits > 18)
+		/* simple_strtoull wraps silently; bound input to u64 range. */
+		if (endp - digits > 19)
 			return -ERANGE;
 		p = endp;
 
@@ -100,31 +100,31 @@ static int param_set_duration(const char *val, const struct kernel_param *kp)
 		switch (*p) {
 		case 'y':
 		case 'Y':
-			mult = 365UL * 24 * 60 * 60;
+			mult = 365ULL * 24 * 60 * 60;
 			p++;
 			break;
 		case 'd':
 		case 'D':
-			mult = 24UL * 60 * 60;
+			mult = 24ULL * 60 * 60;
 			p++;
 			break;
 		case 'h':
 		case 'H':
-			mult = 60UL * 60;
+			mult = 60ULL * 60;
 			p++;
 			break;
 		case 'm':
 		case 'M':
-			mult = 60UL;
+			mult = 60ULL;
 			p++;
 			break;
 		case 's':
 		case 'S':
-			mult = 1UL;
+			mult = 1ULL;
 			p++;
 			break;
 		case '\0':
-			mult = 1UL;
+			mult = 1ULL;
 			break;
 		default:
 			return -EINVAL;
@@ -140,7 +140,7 @@ static int param_set_duration(const char *val, const struct kernel_param *kp)
 	if (!got_token)
 		return -EINVAL;
 
-	WRITE_ONCE(*((unsigned long *)kp->arg), total);
+	WRITE_ONCE(*((u64 *)kp->arg), total);
 	return 0;
 }
 
@@ -165,12 +165,11 @@ static int param_kmod_hide(const char *val, const struct kernel_param *kp)
 	return 0;
 }
 
-/* Mirrors upstream uptime_proc_show, adding configured offsets. */
 static int notrace hooked_uptime_proc_show(struct seq_file *m, void *v)
 {
 	struct timespec64 real_uptime;
 	struct timespec64 real_idle;
-	unsigned long uptime_off, idle_off;
+	u64 uptime_off, idle_off;
 	u64 nsec;
 	u32 rem;
 	int i;
@@ -185,15 +184,15 @@ static int notrace hooked_uptime_proc_show(struct seq_file *m, void *v)
 	real_idle.tv_sec = div_u64_rem(nsec, NSEC_PER_SEC, &rem);
 	real_idle.tv_nsec = rem;
 
-	/* Snapshot both offsets once so the two columns are consistent. */
+	/* Both columns must reflect the same offsets. */
 	uptime_off = READ_ONCE(uptime);
 	idle_off = READ_ONCE(idletime);
 
-	seq_printf(m, "%lu.%02lu %lu.%02lu\n",
-		   (unsigned long)real_uptime.tv_sec + uptime_off,
-		   (real_uptime.tv_nsec / (NSEC_PER_SEC / 100)),
-		   (unsigned long)real_idle.tv_sec + idle_off,
-		   (real_idle.tv_nsec / (NSEC_PER_SEC / 100)));
+	seq_printf(m, "%llu.%02llu %llu.%02llu\n",
+		   (u64)real_uptime.tv_sec + uptime_off,
+		   (u64)(real_uptime.tv_nsec / (NSEC_PER_SEC / 100)),
+		   (u64)real_idle.tv_sec + idle_off,
+		   (u64)(real_idle.tv_nsec / (NSEC_PER_SEC / 100)));
 	return 0;
 }
 
